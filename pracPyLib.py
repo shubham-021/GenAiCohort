@@ -5,26 +5,32 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client.http.models import Distance, VectorParams
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import WebBaseLoader
+from langchain_core.runnables import RunnableLambda, RunnableSequence
+from langchain_core.prompts import PromptTemplate
 from langchain.tools import Tool
+from langchain.schema.output import ChatGeneration
 import os
 import json
+import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
 
 openAI_client = OpenAI()
-# qdrant_client = QdrantClient(url="http://localhost:6333")
-# BASE_URL = "https://docs.chaicode.com/"
-# embeddings = OpenAIEmbeddings(
-#     model="text-embedding-3-large",
-#     api_key = os.getenv("OPENAI_API_KEY")
-# )
-# text_splitter = RecursiveCharacterTextSplitter(
-#     chunk_size = 1000,
-#     chunk_overlap = 200,
-# )
+qdrant_client = QdrantClient(url="http://localhost:6333")
+BASE_URL = "https://docs.chaicode.com/"
+embeddings = OpenAIEmbeddings(
+    model="text-embedding-3-large",
+    api_key = os.getenv("OPENAI_API_KEY")
+)
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size = 1000,
+    chunk_overlap = 200,
+)
 
 # vector_stores = {}
 # course_structure = {}
@@ -41,6 +47,7 @@ openAI_client = OpenAI()
 #     details = item.find('details')
 #     if details:
 #         course_name = details.find('span' , class_='large').get_text(strip=True)
+#         formatted_course_name = re.sub(r"[^a-z0-9_]", "", re.sub(r"\s+", "_", course_name.lower()))
 
 #         course_links = {}
 #         for link in details.select('ul a[href]'):
@@ -48,7 +55,7 @@ openAI_client = OpenAI()
 #             page_url = f"{BASE_URL}{link['href']}"
 #             course_links[page_name] = page_url
 
-#         course_structure[course_name] = course_links
+#         course_structure[formatted_course_name] = course_links
 
 
 # for course_name in course_structure.keys():
@@ -106,7 +113,7 @@ openAI_client = OpenAI()
 #     },
 #     "required": ["collection_name"]
 #   }
-# }
+# # }
 
 tool = {
     "type": "function",
@@ -119,55 +126,81 @@ tool = {
                 "collection_name": {
                     "type": "string",
                     "description": "Name of the course the user's query might be related to"
+                },
+                "user_query" : {
+                    "type": "string",
+                    "description": "users query"
                 }
             },
-            "required": ["collection_name"]
+            "required": ["collection_name" , "user_query"]
         }
     }
 }
 
+llm1 = ChatOpenAI(model="gpt-4")
+llm2 = ChatOpenAI(model="gpt-4")
 
-system_prompt = """
-    You are an AI assistant which answers users query based on the chai aur docs website , you take user query and run a similarity_search
-    function given as tool , which takes name of the collection as an argument , which you can pick from the provided available collections
-    based on the user query , then you get chunks of datas as response from that function , which you present in front of the user.If you
-    get no chunks or get false as a response from the function , ask user to send their query more clearly.
+def similarity_search(course_name , user_query):
+    retreiver = QdrantVectorStore.from_existing_collection(
+                    url="http://localhost:6333",
+                    collection_name=course_name,
+                    embedding=embeddings
+                )
+    search_result = retreiver.similarity_search(
+        query=user_query
+    )
+    return search_result
 
-    Collection/Courses are named as "Chai aur"+" course name"
+prompt1 = PromptTemplate.from_template("""
+    You are an AI assistant which takes user query , analyse , and finds the relevant course name from the available courses and
+    strictly returns only the course name as per available course lists. If user query is unrelated return "None".
 
-    Available collections are :
-    1. Chai aur C++
-    2. Chai aur DevOps
-    3. Chai aur Django
-    4. Chai aur Git
-    5. Chai aur HTML
-    6. Chai aur SQL
+    User's Query : {query}
+    Courses Available : {courseLists}
+""")
 
-    Steps to be followed:
-    1. Take the user query
-    2. Find the relevant course name , if no related course then tell user that query is unrelated
-    3. If course found , call for similarity_search function with the related collection name as argument
-    4. Respond to users query based on the chunks retrieved 
-    5. If query is not related to any of the collection/courses , ask user to state their query more clearly
-"""
+prompt2 = PromptTemplate.from_template("""
+    You are an AI assistant which takes chunks retrieved from the db and the user query , and gives a nice and clear reponse to the user , along with the course name
+    and source from the source list.If you get "none" as context , tell user to give his query more clearly , as we can find no related 
+    document on chai aur docs.
+                                       
+    user's query : {query}
+    Chunk : {context}  
+    course name : {course_name}   
+    sources : {sources}                          
+""")
 
-response = openAI_client.chat.completions.create(
-  model="gpt-4o",
-  messages=[
-      {"role" : "system" , "content": system_prompt},
-      {"role" : "user" , "content" : "How can you assist me ?"}
-    ],
-  tools = [tool],
-  tool_choice = "auto"
-)
+users_query = input("> ")
 
-tool_calls = response.choices[0].message.tool_calls
+course_names = ["Chai aur C++" , "Chai aur DevOps" , "Chai aur Django" , "Chai aur SQL" , "Chai aur HTML" , "Chai aur Git"]
 
-if tool_calls:
-    tool_name = tool_calls[0].function.name
-    tool_args = json.loads(tool_calls[0].function.arguments)
-    print("Tool name:", tool_name)
-    print("Args:", tool_args)
-else:
-    print("No tool was called. Model said:")
-    print(response.choices[0].message.content)
+chain1 = prompt1 | llm1
+course_name_response = chain1.invoke({
+    "query" : users_query,
+    "courseLists" : course_names
+})
+
+predicted_course = course_name_response.content.strip()
+formatted_course = re.sub(r"[^a-z0-9_]", "", re.sub(r"\s+", "_", predicted_course.lower()))
+# print(formatted_course)
+if formatted_course == "none":
+        response = (prompt2 | llm2).invoke({
+        "query": users_query,
+        "context": formatted_course,
+        "course_name": predicted_course
+    })
+elif formatted_course != "none":
+    docs = similarity_search(formatted_course, users_query)
+    context = "\n\n".join([doc.page_content for doc in docs])
+    sources = list(set(doc.metadata["source"] for doc in docs))
+    # print(docs)
+    response = (prompt2 | llm2).invoke({
+        "query": users_query,
+        "context": context,
+        "course_name": predicted_course,
+        "sources" : sources
+    })
+
+print(response.content)
+
+
