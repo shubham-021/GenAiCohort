@@ -14,6 +14,9 @@ client = wrap_openai(OpenAI())
 class detectCallResponse(BaseModel):
     is_coding : bool
 
+class responseAI(BaseModel):
+    res : str
+
 class State(TypedDict):
     user_message : str
     ai_message : str
@@ -47,23 +50,35 @@ def route_edge(state:State) -> Literal["solve_coding_ques","solve_simple_ques"]:
 
 def solve_coding_ques(state:State):
     SYSTEM_PROMPT="""
-        You are an AI agent whose job is answer user's coding related query.
+        You are an AI agent whose job is to resolve user's coding related issues.
         Tone: Professional
     """
 
-    result = client.chat.completions.create(
+    result = client.beta.chat.completions.parse(
         model="gpt-4o",
+        response_format=responseAI,
         messages=[
             {"role":"system" , "content":SYSTEM_PROMPT},
             {"role":"user" , "content":state["user_message"]}
         ]
     )
-    state["ai_message"] = result.choices[0].message.content
+    state["ai_message"] = result.choices[0].message.parsed.res
     return state
 
 def solve_simple_question(state:State):
-    user_message = state.get("user_message")
-    state["ai_message"] = "Please ask some coding related questions."
+    SYSTEM_PROMPT="""
+        You are an AI agent whose job is to chat with user.
+    """
+
+    result = client.beta.chat.completions.parse(
+        model="gpt-4.1-mini",
+        response_format=responseAI,
+        messages=[
+            {"role":"system" , "content":SYSTEM_PROMPT},
+            {"role":"user" , "content":state["user_message"]}
+        ]
+    )
+    state["ai_message"] = result.choices[0].message.parsed.res
     return state
 
 
