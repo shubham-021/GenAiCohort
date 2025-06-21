@@ -34,6 +34,9 @@ def stream_graph_updates(user_input: str):
     for event in graph.stream(intial_state):
         for value in event.values():
             print("Assistant:", value["messages"].content)
+    # for event in graph.stream(intial_state , stream_mode="values"):
+    #     if "messages" in event:
+    #         event["messages"][-1].pretty_print()
 
 
 def chat():
